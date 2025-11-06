@@ -5,9 +5,10 @@
 #
 # 功能:
 #   - 专为 x86-64 平台编译
+#   - 根分区大小设置为 1GB (1024MB)
 #   - 使用稳定版 ImmortalWrt，确保插件兼容性 (.ipk 格式)
+#   - 可手动触发，也可在北京时间每周一凌晨 0 点自动触发
 #   - 自动包含 EFI 引导支持，适用于现代物理机和虚拟机
-#   - 可在 GitHub Actions 页面自定义插件和版本
 #
 # =================================================================
 #
@@ -15,29 +16,31 @@
 name: Build ImmortalWrt (x86-64)
 
 on:
-  # 允许在 GitHub Actions 页面手动触发此工作流程
+  # 1. 手动触发器 (保留，方便随时编译)
   workflow_dispatch:
     inputs:
-      # 【关键】要编译的 ImmortalWrt 分支，推荐使用稳定版
       version:
         description: 'ImmortalWrt version (branch)'
         required: true
         default: 'openwrt-23.05'
-      # 【关键】需要集成的插件列表，用空格隔开
       packages:
         description: 'Extra packages (use space to separate)'
         required: false
         default: 'luci luci-i18n-base-zh-cn luci-app-upnp luci-app-passwall2 luci-app-vlmcsd luci-theme-argon'
-      # 是否发布到 GitHub Releases，方便下载
       release:
         description: 'Release firmware to Github Releases'
         required: true
         default: 'true'
 
+  # 2. 定时触发器 (新增，用于自动编译)
+  schedule:
+    # cron 表达式，设置为 UTC 时间每周日 16:00，即北京时间每周一 00:00
+    - cron: '0 16 * * 0'
+
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  REPO_BRANCH: ${{ github.event.inputs.version }}
-  EXTRA_PACKAGES: ${{ github.event.inputs.packages }}
+  REPO_BRANCH: ${{ github.event.inputs.version || 'openwrt-23.05' }}
+  EXTRA_PACKAGES: ${{ github.event.inputs.packages || 'luci luci-i18n-base-zh-cn luci-app-upnp luci-app-passwall2 luci-app-vlmcsd luci-theme-argon' }}
   CONFIG_FILE: .config
   FIRMWARE_TAG: ImmortalWrt-x86
 
@@ -65,7 +68,7 @@ jobs:
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
 
-    # 步骤3：清理磁盘空间 (可选但强烈建议)
+    # 步骤3：清理磁盘空间
     - name: Free up disk space
       run: |
         echo "Cleaning up disk space..."
@@ -88,18 +91,14 @@ jobs:
     - name: Generate .config for x86
       run: |
         cd openwrt
-        # 清空并写入基础配置
         echo "CONFIG_TARGET_x86=y" > $CONFIG_FILE
         echo "CONFIG_TARGET_x86_64=y" >> $CONFIG_FILE
         echo "CONFIG_TARGET_DEVICE_x86_64_Generic=y" >> $CONFIG_FILE
-        # 写入 EFI 和 GPT 支持
         echo "CONFIG_TARGET_IMAGES_PAD=y" >> $CONFIG_FILE
         echo "CONFIG_TARGET_IMAGES_GPT=y" >> $CONFIG_FILE
         echo "CONFIG_GRUB_EFI_IMAGES=y" >> $CONFIG_FILE
-        # 设置根分区大小为 512MB，防止空间不足
-        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> $CONFIG_FILE
-
-        # 写入自定义插件列表
+        # 【关键修改】设置根分区大小为 1024MB (1GB)，方便安装更多插件
+        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> $CONFIG_FILE
         if [ -n "$EXTRA_PACKAGES" ]; then
           echo "$EXTRA_PACKAGES" | sed 's/ /\n/g' >> extra_packages.list
           echo -e "\n# Add extra packages" >> $CONFIG_FILE
@@ -107,8 +106,6 @@ jobs:
             echo "CONFIG_PACKAGE_${package}=y" >> $CONFIG_FILE
           done < extra_packages.list
         fi
-        
-        # 应用默认设置并生成最终 .config
         make defconfig
 
     # 步骤7：下载依赖包
@@ -131,7 +128,6 @@ jobs:
         cd openwrt
         FIRMWARE_DIR="bin/targets/x86/64"
         mkdir -p firmware
-        # 复制两种最常用的固件格式
         cp -f $FIRMWARE_DIR/*-combined-efi.img.gz firmware/
         cp -f $FIRMWARE_DIR/*-generic-squashfs-rootfs.img.gz firmware/
         echo "FIRMWARE_PATH=openwrt/firmware" >> $GITHUB_ENV
@@ -146,12 +142,13 @@ jobs:
 
     # 步骤11：发布固件到 GitHub Release
     - name: Create release
-      if: github.event.inputs.release == 'true' && steps.organize.outputs.status == 'success'
+      if: (github.event_name == 'schedule') || (github.event.inputs.release == 'true') && steps.organize.outputs.status == 'success'
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.run_id }}
         body: |
           - Platform: x86/64
+          - RootFS: 1GB
           - Branch: ${{ env.REPO_BRANCH }}
           - Packages: ${{ env.EXTRA_PACKAGES }}
         files: ${{ env.FIRMWARE_PATH }}/*
