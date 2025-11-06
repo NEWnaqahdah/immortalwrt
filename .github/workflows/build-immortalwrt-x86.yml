@@ -1,20 +1,20 @@
 #
 # =================================================================
-#         ImmortalWrt x86-64 固件编译 GitHub Actions (最终完善版)
+#         ImmortalWrt x86-64 固件编译 GitHub Actions 
 # =================================================================
 #
 # 特性:
 #   - 平台: x86-64
 #   - 文件系统: EXT4 (完全可读写，为 PVE/ESXi 等虚拟机环境优化)
-#   - 固件大小: 1GB (1024MB), 提供充足插件空间
-#   - 触发方式: 手动触发 或 每周一凌晨 0 点 (北京时间) 自动更新
+#   - 固件大小: 1GB (1024MB)
 #   - 引导方式: EFI (现代 x86 设备标准)
-#   - 脚本优化: 移除所有冗余代码，逻辑清晰严谨
-#
+#   - 插件支持: 集成 Passwall2 官方作者仓库 (xiaorouji)，确保版本最新、最纯净
+#   - 触发方式: 手动触发 或 每周一凌晨 0 点 (北京时间) 自动更新
+#   #
 # =================================================================
 #
 
-name: Build ImmortalWrt (x86-64, EXT4, 1GB)
+name: Build ImmortalWrt (x86-64, EXT4, 1GB, Official-Passwall2)
 
 on:
   workflow_dispatch:
@@ -40,7 +40,7 @@ env:
   REPO_BRANCH: ${{ github.event.inputs.version || 'openwrt-23.05' }}
   EXTRA_PACKAGES: ${{ github.event.inputs.packages || 'luci luci-i18n-base-zh-cn luci-app-upnp luci-app-passwall2 luci-app-vlmcsd luci-theme-argon' }}
   CONFIG_FILE: .config
-  FIRMWARE_TAG: ImmortalWrt-x86-EXT4-1GB
+  FIRMWARE_TAG: ImmortalWrt-x86-EXT4-1GB-Official-Passwall2
 
 jobs:
   build:
@@ -69,6 +69,14 @@ jobs:
     - name: Clone source code
       run: git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
 
+    # 步骤 5: 添加 Passwall2 官方作者的软件源
+    - name: Add official passwall2 feed by xiaorouji
+      run: |
+        cd openwrt
+        # 添加 xiaorouji/openwrt-passwall2 仓库
+        echo "src-git passwall2 https://github.com/xiaorouji/openwrt-passwall2" >> feeds.conf.default
+    # --------------------
+
     - name: Update feeds
       run: |
         cd openwrt
@@ -83,15 +91,9 @@ jobs:
         echo "CONFIG_TARGET_DEVICE_x86_64_Generic=y" >> $CONFIG_FILE
         echo "CONFIG_TARGET_IMAGES_PAD=y" >> $CONFIG_FILE
         echo "CONFIG_GRUB_EFI_IMAGES=y" >> $CONFIG_FILE
-
-        # --- 【关键配置】确保生成适用于 PVE 的可读写固件 ---
-        # 1. 强制使用 EXT4 可读写文件系统
         echo "CONFIG_TARGET_IMAGES_EXT4=y" >> $CONFIG_FILE
-        # 2. 明确禁止编译只读的 SquashFS 格式
         echo "CONFIG_TARGET_IMAGES_SQUASHFS=n" >> $CONFIG_FILE
-        # 3. 设置根分区大小，决定最终固件总大小约为 1GB
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> $CONFIG_FILE
-        # ----------------------------------------------------
         
         if [ -n "$EXTRA_PACKAGES" ]; then
           echo "$EXTRA_PACKAGES" | sed 's/ /\n/g' >> extra_packages.list
@@ -113,13 +115,12 @@ jobs:
         echo -e "$(nproc) thread build."
         make -j$(nproc)
 
-    - name: Organize files (Optimized)
+    - name: Organize files
       id: organize
       run: |
         cd openwrt
         FIRMWARE_DIR="bin/targets/x86/64"
         mkdir -p firmware
-        # 【代码修正】只拷贝我们需要的 EXT4 格式的 EFI 镜像
         cp -f $FIRMWARE_DIR/*-combined-efi.img.gz firmware/
         echo "FIRMWARE_PATH=openwrt/firmware" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
