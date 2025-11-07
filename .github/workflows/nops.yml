@@ -1,0 +1,158 @@
+#
+# =================================================================
+#   ImmortalWrt x86-64 固件编译 (Passwall2 依赖预置版)
+# =================================================================
+#
+# 目标:
+#   编译一个不直接集成 Passwall2，但包含其全部运行依赖的 "准系统" 固件。
+#   用户可在刷机后，手动上传并安装任意版本的 luci-app-passwall2.ipk。
+#
+# 特性:
+#   - 平台: x86-64
+#   - 文件系统: EXT4 (可读写)
+#   - 固件大小: 1GB
+#   - 引导方式: EFI
+#   - 插件支持: 预置 Passwall2 全部核心依赖
+#
+# =================================================================
+#
+
+name: Build ImmortalWrt (x86-64, Passwall2-Ready Base)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'ImmortalWrt version (branch)'
+        required: true
+        default: 'openwrt-23.05'
+      packages:
+        description: 'Base packages + Passwall2 dependencies (space separated)'
+        required: false
+        # 默认包列表已包含 Passwall2 的所有核心依赖
+        default: >-
+          luci luci-i18n-base-zh-cn luci-app-upnp luci-app-vlmcsd luci-theme-argon
+          chinadns-ng dns2socks dnsmasq-full ipt2socks microsocks pdnsd-alt shadowsocks-rust-sslocal
+          simple-obfs tcping trojan-plus unzip v2ray-core v2ray-geoip v2ray-geosite xray-core xray-plugin
+          hysteria sing-box naiveproxy
+      release:
+        description: 'Release firmware to Github Releases'
+        required: true
+        default: 'true'
+
+  schedule:
+    - cron: '0 16 * * 0'
+
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  REPO_BRANCH: ${{ github.event.inputs.version || 'openwrt-23.05' }}
+  EXTRA_PACKAGES: ${{ github.event.inputs.packages }}
+  CONFIG_FILE: .config
+  FIRMWARE_TAG: ImmortalWrt-x86-Passwall2-Ready-Base
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Maximize build space
+      run: |
+        echo "Starting disk space cleanup..."
+        df -h
+        sudo apt-get purge -y azure-cli* gh* google* dotnet* powershell* openjdk*
+        sudo apt-get autoremove -y
+        sudo apt-get clean
+        sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/powershell /usr/share/swift /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+        sudo docker rmi $(docker images -q) || true
+        echo "Cleanup complete. Available space:"
+        df -h
+
+    - name: Install build dependencies
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install ack antlr3 aria2 autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz mlocate mt-st quilt rsync subversion swig texinfo uglifyjs upx-ucl unzip vim-common wget xmlto xxd zlib1g-dev
+
+    - name: Install Rust Toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+
+    - name: Clone source code
+      run: git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
+
+    # 添加 kenzok8 社区源，以获取 xray, v2ray, sing-box 等核心依赖包
+    - name: Add community packages feed (kenzok8)
+      run: |
+        cd openwrt
+        echo "src-git small https://github.com/kenzok8/small" >> feeds.conf.default
+
+    - name: Update and install feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Generate .config with dependencies
+      run: |
+        cd openwrt
+        echo "CONFIG_TARGET_x86=y" > $CONFIG_FILE
+        echo "CONFIG_TARGET_x86_64=y" >> $CONFIG_FILE
+        echo "CONFIG_TARGET_DEVICE_x86_64_Generic=y" >> $CONFIG_FILE
+        echo "CONFIG_TARGET_IMAGES_PAD=y" >> $CONFIG_FILE
+        echo "CONFIG_GRUB_EFI_IMAGES=y" >> $CONFIG_FILE
+        echo "CONFIG_TARGET_IMAGES_EXT4=y" >> $CONFIG_FILE
+        echo "CONFIG_TARGET_IMAGES_SQUASHFS=n" >> $CONFIG_FILE
+        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> $CONFIG_FILE
+        
+        if [ -n "$EXTRA_PACKAGES" ]; then
+          echo "$EXTRA_PACKAGES" | sed 's/ /\n/g' >> extra_packages.list
+          echo -e "\n# Add extra packages" >> $CONFIG_FILE
+          while read -r package; do
+            echo "CONFIG_PACKAGE_${package}=y" >> $CONFIG_FILE
+          done < extra_packages.list
+        fi
+        make defconfig
+
+    - name: Download package
+      run: |
+        cd openwrt
+        make download -j$(nproc)
+
+    - name: Build firmware
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread build."
+        make -j$(nproc)
+
+    - name: Organize files
+      id: organize
+      run: |
+        cd openwrt
+        FIRMWARE_DIR="bin/targets/x86/64"
+        mkdir -p firmware
+        cp -f $FIRMWARE_DIR/*-combined-efi.img.gz firmware/
+        echo "FIRMWARE_PATH=openwrt/firmware" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Upload firmware to artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.FIRMWARE_TAG }}-${{ github.run_id }}
+        path: ${{ env.FIRMWARE_PATH }}
+
+    - name: Create release
+      if: (github.event_name == 'schedule' || github.event.inputs.release == 'true') && steps.organize.outputs.status == 'success'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.run_id }}
+        body: |
+          - Platform: x86/64
+          - Filesystem: EXT4 (Writable)
+          - Firmware Size: ~1GB
+          - Branch: ${{ env.REPO_BRANCH }}
+          - Packages: Base system with all dependencies for Passwall2.
+          - Note: Install luci-app-passwall2 ipk manually after flashing.
+        files: ${{ env.FIRMWARE_PATH }}/*
