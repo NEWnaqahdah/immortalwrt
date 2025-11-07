@@ -26,7 +26,7 @@ on:
       packages:
         description: 'Extra packages (use space to separate)'
         required: false
-        default: 'luci luci-i18n-base-zh-cn luci-app-upnp luci-app-passwall2 luci-app-vlmcsd luci-theme-argon'
+        default: 'xray-core dnsmasq-full ipset kmod-r8125 kmod-igc kmod-nft-socket kmod-nft-tproxy luci luci-i18n-base-zh-cn luci-app-upnp luci-app-passwall2 luci-app-vlmcsd luci-theme-argon openssh-sftp-server automount'
       release:
         description: 'Release firmware to Github Releases'
         required: true
