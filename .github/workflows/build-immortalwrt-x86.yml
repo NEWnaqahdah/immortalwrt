@@ -1,16 +1,17 @@
 #
 # =================================================================
-#         ImmortalWrt x86-64 固件编译 GitHub Actions 
+#         ImmortalWrt x86-64 固件编译 GitHub Actions (最终生产版)
 # =================================================================
 #
 # 特性:
 #   - 平台: x86-64
 #   - 文件系统: EXT4 (完全可读写，为 PVE/ESXi 等虚拟机环境优化)
-#   - 固件大小: 1GB (1024MB)
+#   - 固件大小: 1GB (1024MB), 提供充足插件空间
 #   - 引导方式: EFI (现代 x86 设备标准)
-#   - 插件支持: 集成 Passwall2 官方作者仓库 (xiaorouji)，确保版本最新、最纯净
+#   - 插件支持: 集成 Passwall2 官方作者仓库 (xiaorouji)，确保版本最新
+#   - 编译优化: 预安装 Rust 编译器，解决因内存耗尽导致的编译失败问题
 #   - 触发方式: 手动触发 或 每周一凌晨 0 点 (北京时间) 自动更新
-#   #
+#
 # =================================================================
 #
 
@@ -60,6 +61,12 @@ jobs:
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
 
+    # --- 【核心修正：预安装 Rust 编译器】 ---
+    # 解决编译 rust [host] 内存不足的问题
+    - name: Install Rust Toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+    # ----------------------------------------
+
     - name: Free up disk space
       run: |
         sudo docker rmi $(docker images -q)
@@ -69,13 +76,10 @@ jobs:
     - name: Clone source code
       run: git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
 
-    # 步骤 5: 添加 Passwall2 官方作者的软件源
     - name: Add official passwall2 feed by xiaorouji
       run: |
         cd openwrt
-        # 添加 xiaorouji/openwrt-passwall2 仓库
         echo "src-git passwall2 https://github.com/xiaorouji/openwrt-passwall2" >> feeds.conf.default
-    # --------------------
 
     - name: Update feeds
       run: |
